@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Session Tracker</title>
+
+<!-- Home-screen app behavior on iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Session Tracker" />
+<meta name="theme-color" content="#0F1C16" />
+
+<style>
+  html, body { margin: 0; padding: 0; background: #0F1C16; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  input, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    display: inline-block; width: 1em; height: 1em; border-radius: 999px;
+    border: 2px solid rgba(255,255,255,0.25); border-top-color: currentColor;
+    animation: spin 0.8s linear infinite;
+  }
+</style>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ---------------------------------------------------------------------- */
+/* Design tokens                                                          */
+/* ---------------------------------------------------------------------- */
+
+const COLORS = {
+  bg: '#0F1C16', panel: '#182B21', panelAlt: '#1E3327', border: '#2E4A38',
+  borderSoft: '#24392C', text: '#F2EEE2', textMuted: '#93AB9C', textFaint: '#5E7669',
+  clay: '#C1704A', clayDark: '#9C5A3B', amber: '#E3A33E', danger: '#C1544A', chalk: '#F2EEE2',
+};
+const HEADLINE_FONT = "'Iowan Old Style', 'Palatino Linotype', Georgia, serif";
+const BODY_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+
+/* ---------------------------------------------------------------------- */
+/* Domain constants                                                       */
+/* ---------------------------------------------------------------------- */
+
+const FIELD_LABELS = {
+  pitchSpeed: 'Pitch Speed', P: 'Pitches', AB: 'At-Bats', H: 'Hits',
+  EBH: 'Extra Base Hits', HR: 'Home Runs', AVG: 'AVG', LDpct: 'Line Drive %',
+  AvgVel: 'Avg Exit Velo', MaxVel: 'Max Exit Velo', MaxDist: 'Max Distance',
+  MaxPoints: 'Max Points', TotalPts: 'Total Points',
+};
+const FIELD_UNITS = {
+  pitchSpeed: 'mph', P: '', AB: '', H: '', EBH: '', HR: '', AVG: '',
+  LDpct: '%', AvgVel: 'mph', MaxVel: 'mph', MaxDist: 'ft', MaxPoints: 'pts', TotalPts: 'pts',
+};
+const REVIEW_FIELD_ORDER = ['pitchSpeed','P','AB','H','EBH','HR','AVG','LDpct','AvgVel','MaxVel','MaxDist','MaxPoints','TotalPts'];
+
+const METRICS = [
+  { key: 'MaxVel', label: 'Max Exit Velo', unit: 'mph', decimals: 1 },
+  { key: 'AvgVel', label: 'Avg Exit Velo', unit: 'mph', decimals: 1 },
+  { key: 'MaxDist', label: 'Max Distance', unit: 'ft', decimals: 0 },
+  { key: 'AVG', label: 'Batting Avg', unit: '', decimals: 3 },
+  { key: 'MaxPoints', label: 'Max Points', unit: 'pts', decimals: 0 },
+  { key: 'TotalPts', label: 'Total Points', unit: 'pts', decimals: 0 },
+  { key: 'LDpct', label: 'Line Drive %', unit: '%', decimals: 0 },
+  { key: 'PitchSpeed', label: 'Pitch Speed', unit: 'mph', decimals: 1 },
+];
+
+const TABS = [
+  { key: 'upload', label: 'Upload', icon: '📷' },
+  { key: 'log', label: 'Log', icon: '🕘' },
+  { key: 'progress', label: 'Progress', icon: '📈' },
+  { key: 'records', label: 'Records', icon: '🏆' },
+  { key: 'goals', label: 'Goals', icon: '🎯' },
+];
+
+/* ---------------------------------------------------------------------- */
+/* Storage (plain localStorage — this is a real standalone page)          */
+/* ---------------------------------------------------------------------- */
+
+const storage = {
+  get(key, fallback) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+    catch (e) { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.error(e); }
+  },
+};
+
+/* ---------------------------------------------------------------------- */
+/* Helpers                                                                 */
+/* ---------------------------------------------------------------------- */
+
+function uid() {
+  try { return crypto.randomUUID(); } catch (e) { return 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2); }
+}
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function fmtDateShort(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+function fmtDateLong(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
+function fmtVal(val, decimals) {
+  if (val === null || val === undefined || Number.isNaN(val)) return '—';
+  if (decimals === 3) return val.toFixed(3).replace(/^0\./, '.');
+  return decimals ? val.toFixed(decimals) : Math.round(val).toString();
+}
+
+/* Best-effort EXIF "date taken" extractor — scans raw bytes for an "Exif"
+   marker followed by a TIFF header, then walks IFD0 (and the Exif SubIFD)
+   for tag 0x9003 (DateTimeOriginal) or 0x0132 (DateTime). */
+function extractExifDateString(buffer) {
+  try {
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+    for (let i = 0; i < bytes.length - 12; i++) {
+      if (bytes[i] === 0x45 && bytes[i+1] === 0x78 && bytes[i+2] === 0x69 && bytes[i+3] === 0x66) {
+        const tiffStart = i + 6;
+        if (tiffStart + 8 > bytes.length) continue;
+        const b0 = bytes[tiffStart], b1 = bytes[tiffStart+1];
+        let little;
+        if (b0 === 0x49 && b1 === 0x49) little = true;
+        else if (b0 === 0x4D && b1 === 0x4D) little = false;
+        else continue;
+        try { const found = parseTiffForDate(view, tiffStart, little); if (found) return found; }
+        catch (e) {}
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+function parseTiffForDate(view, tiffStart, little) {
+  const ifd0Offset = view.getUint32(tiffStart + 4, little);
+  return parseIFDForDate(view, tiffStart, tiffStart + ifd0Offset, little);
+}
+function parseIFDForDate(view, tiffStart, ifdOffset, little) {
+  if (ifdOffset + 2 > view.byteLength) return null;
+  const entryCount = view.getUint16(ifdOffset, little);
+  let dateTime = null, exifIFDOffset = null;
+  for (let e = 0; e < entryCount; e++) {
+    const entryOffset = ifdOffset + 2 + e * 12;
+    if (entryOffset + 12 > view.byteLength) break;
+    const tag = view.getUint16(entryOffset, little);
+    const count = view.getUint32(entryOffset + 4, little);
+    const valueOffset = entryOffset + 8;
+    if (tag === 0x0132 || tag === 0x9003) {
+      let dataStart = count <= 4 ? valueOffset : tiffStart + view.getUint32(valueOffset, little);
+      let str = '';
+      for (let c = 0; c < count - 1 && dataStart + c < view.byteLength; c++) str += String.fromCharCode(view.getUint8(dataStart + c));
+      if (str) { dateTime = str; if (tag === 0x9003) return dateTime; }
+    }
+    if (tag === 0x8769) exifIFDOffset = view.getUint32(valueOffset, little);
+  }
+  if (exifIFDOffset) { const sub = parseIFDForDate(view, tiffStart, tiffStart + exifIFDOffset, little); if (sub) return sub; }
+  return dateTime;
+}
+function exifStringToISODate(str) {
+  const m = /^(\d{4}):(\d{2}):(\d{2})/.exec(str || '');
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+async function fileToJpegDataUrl(file) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    return drawToJpeg(bitmap, bitmap.width, bitmap.height);
+  } catch (e) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try { const d = drawToJpeg(img, img.naturalWidth, img.naturalHeight); URL.revokeObjectURL(url); resolve(d); }
+        catch (err) { URL.revokeObjectURL(url); reject(err); }
+      };
+      img.onerror = (err) => { URL.revokeObjectURL(url); reject(err); };
+      img.src = url;
+    });
+  }
+}
+function drawToJpeg(source, w, h) {
+  const MAX_DIM = 1600;
+  let scale = 1;
+  if (w > MAX_DIM || h > MAX_DIM) scale = MAX_DIM / Math.max(w, h);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.85);
+}
+
+const EXTRACTION_PROMPT = `This is a photo of a HitTrax baseball hitting-analytics screen (a TV/monitor showing a batting practice session).
+
+Read two things:
+1. The "Pitch" speed value shown near the top of the screen (the speed for the most recent swing).
+2. The cumulative stats row near the bottom of the screen, with columns labeled P, AB, H, EBH, HR, AVG, LD%, AvgVel, MaxVel, MaxDist, MaxPoints, TotalPts.
+
+Return ONLY a raw JSON object, no markdown fences, no commentary, with exactly these keys:
+{"pitchSpeed": number|null, "P": number|null, "AB": number|null, "H": number|null, "EBH": number|null, "HR": number|null, "AVG": number|null, "LDpct": number|null, "AvgVel": number|null, "MaxVel": number|null, "MaxDist": number|null, "MaxPoints": number|null, "TotalPts": number|null}
+
+AVG must be a decimal number like 0.500 (not a string). LDpct should be the plain number shown (e.g. 35, not 0.35). If a value is genuinely not visible, use null rather than guessing.`;
+
+async function extractStatsFromImage(base64Jpeg, apiKey) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Jpeg } },
+        { type: 'text', text: EXTRACTION_PROMPT },
+      ]}],
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error('Request failed (' + res.status + '): ' + body.slice(0, 200));
+  }
+  const data = await res.json();
+  const textBlock = (data.content || []).find((b) => b.type === 'text');
+  const raw = textBlock ? textBlock.text : '';
+  const clean = raw.replace(/```json|```/g, '').trim();
+  return JSON.parse(clean);
+}
+
+function aggregateBuckets(bucketList) {
+  const sumP = bucketList.reduce((s,b)=>s+(b.P||0),0);
+  const sumAB = bucketList.reduce((s,b)=>s+(b.AB||0),0);
+  const sumH = bucketList.reduce((s,b)=>s+(b.H||0),0);
+  const sumEBH = bucketList.reduce((s,b)=>s+(b.EBH||0),0);
+  const sumHR = bucketList.reduce((s,b)=>s+(b.HR||0),0);
+  const AVG = sumAB > 0 ? sumH / sumAB : 0;
+  const weightedVelSum = bucketList.reduce((s,b)=>s+(b.AvgVel||0)*(b.AB||0),0);
+  const AvgVel = sumAB > 0 ? weightedVelSum / sumAB : (bucketList.reduce((s,b)=>s+(b.AvgVel||0),0)/(bucketList.length||1));
+  const MaxVel = Math.max(0, ...bucketList.map(b=>b.MaxVel||0));
+  const MaxDist = Math.max(0, ...bucketList.map(b=>b.MaxDist||0));
+  const MaxPoints = Math.max(0, ...bucketList.map(b=>b.MaxPoints||0));
+  const TotalPts = bucketList.reduce((s,b)=>s+(b.TotalPts||0),0);
+  const LDpct = bucketList.reduce((s,b)=>s+(b.LDpct||0),0)/(bucketList.length||1);
+  const PitchSpeed = bucketList.reduce((s,b)=>s+(b.pitchSpeed||0),0)/(bucketList.length||1);
+  return { P: sumP, AB: sumAB, H: sumH, EBH: sumEBH, HR: sumHR, AVG, AvgVel, MaxVel, MaxDist, MaxPoints, TotalPts, LDpct, PitchSpeed };
+}
+function groupBySession(buckets) {
+  const map = new Map();
+  buckets.forEach((b) => { if (!map.has(b.sessionDate)) map.set(b.sessionDate, []); map.get(b.sessionDate).push(b); });
+  return Array.from(map.entries())
+    .map(([date, list]) => ({ date, buckets: list.sort((a,b)=>a.bucketNum-b.bucketNum), agg: aggregateBuckets(list) }))
+    .sort((a,b)=> (a.date < b.date ? 1 : -1));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Small building blocks                                                  */
+/* ---------------------------------------------------------------------- */
+
+function Panel({ children, style }) {
+  return <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 16, ...style }}>{children}</div>;
+}
+function SectionTitle({ children, sub }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <h2 style={{ fontFamily: HEADLINE_FONT, color: COLORS.text, fontSize: 22, letterSpacing: 0.2, margin: 0 }}>{children}</h2>
+      {sub && <p style={{ color: COLORS.textMuted, fontSize: 13, marginTop: 4 }}>{sub}</p>}
+    </div>
+  );
+}
+function EmptyState({ icon, title, body }) {
+  return (
+    <Panel style={{ padding: 28, textAlign: 'center' }}>
+      <div style={{ fontSize: 26, marginBottom: 10 }}>{icon}</div>
+      <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 17, marginBottom: 4 }}>{title}</div>
+      <div style={{ color: COLORS.textMuted, fontSize: 13, lineHeight: 1.5 }}>{body}</div>
+    </Panel>
+  );
+}
+function NumberField({ label, value, onChange, decimals }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ color: COLORS.textMuted, fontSize: 11 }}>{label}</span>
+      <input
+        type="number" inputMode="decimal"
+        value={value === null || value === undefined ? '' : value}
+        onChange={(e) => { const v = e.target.value; onChange(v === '' ? null : Number(v)); }}
+        step={decimals === 3 ? 0.001 : decimals ? 0.1 : 1}
+        style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '8px 10px', fontSize: 15, fontVariantNumeric: 'tabular-nums', width: '100%' }}
+      />
+    </label>
+  );
+}
+
+/* Minimal dependency-free line chart */
+function SimpleLineChart({ data, height = 240 }) {
+  const width = 600;
+  const padL = 40, padR = 12, padT = 14, padB = 28;
+  if (data.length === 0) return null;
+  const values = data.map(d => d.value);
+  let min = Math.min(...values), max = Math.max(...values);
+  if (min === max) { min -= 1; max += 1; }
+  const spanY = max - min;
+  const stepX = data.length > 1 ? (width - padL - padR) / (data.length - 1) : 0;
+  const x = (i) => padL + i * stepX;
+  const y = (v) => padT + (1 - (v - min) / spanY) * (height - padT - padB);
+  const points = data.map((d, i) => `${x(i)},${y(d.value)}`).join(' ');
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+      onMouseLeave={() => setHoverIdx(null)}>
+      {[0, 0.5, 1].map((t, i) => (
+        <line key={i} x1={padL} x2={width - padR} y1={padT + t * (height - padT - padB)} y2={padT + t * (height - padT - padB)} stroke={COLORS.borderSoft} strokeWidth="1" />
+      ))}
+      <polyline points={points} fill="none" stroke={COLORS.clay} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+      {data.map((d, i) => (
+        <g key={i}>
+          <circle cx={x(i)} cy={y(d.value)} r={hoverIdx === i ? 5 : 3.5} fill={COLORS.amber}
+            onMouseEnter={() => setHoverIdx(i)} onTouchStart={() => setHoverIdx(i)} />
+          <text x={x(i)} y={height - 8} fontSize="10" fill={COLORS.textFaint} textAnchor="middle">{d.date}</text>
+        </g>
+      ))}
+      <text x={padL - 8} y={y(max) + 4} fontSize="10" fill={COLORS.textFaint} textAnchor="end">{fmtVal(max, 1)}</text>
+      <text x={padL - 8} y={y(min) + 4} fontSize="10" fill={COLORS.textFaint} textAnchor="end">{fmtVal(min, 1)}</text>
+      {hoverIdx !== null && (
+        <text x={x(hoverIdx)} y={y(data[hoverIdx].value) - 10} fontSize="11" fill={COLORS.text} textAnchor="middle" fontWeight="600">
+          {fmtVal(data[hoverIdx].value, 1)}
+        </text>
+      )}
+    </svg>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Upload tab                                                              */
+/* ---------------------------------------------------------------------- */
+
+function UploadTab({ buckets, apiKey, onSaveSession, onNeedApiKey }) {
+  const [drafts, setDrafts] = useState([]);
+  const fileInputRef = useRef(null);
+
+  const handleFiles = async (fileList) => {
+    if (!apiKey) { onNeedApiKey(); return; }
+    const files = Array.from(fileList).slice(0, 3);
+    const newDrafts = files.map((file) => ({
+      tempId: uid(), status: 'processing', errorMsg: null, sessionDate: todayStr(), previewUrl: null,
+      pitchSpeed: null, P: null, AB: null, H: null, EBH: null, HR: null,
+      AVG: null, LDpct: null, AvgVel: null, MaxVel: null, MaxDist: null, MaxPoints: null, TotalPts: null,
+    }));
+    setDrafts((prev) => [...prev, ...newDrafts]);
+
+    files.forEach(async (file, idx) => {
+      const tempId = newDrafts[idx].tempId;
+      try {
+        const buffer = await file.arrayBuffer();
+        const exifStr = extractExifDateString(buffer);
+        const isoDate = exifStr ? exifStringToISODate(exifStr) : null;
+        const jpegDataUrl = await fileToJpegDataUrl(file);
+        const base64 = jpegDataUrl.split(',')[1];
+        setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, previewUrl: jpegDataUrl, sessionDate: isoDate || d.sessionDate } : d));
+        const stats = await extractStatsFromImage(base64, apiKey);
+        setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, ...stats, status: 'done' } : d));
+      } catch (e) {
+        setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, status: 'error', errorMsg: 'Could not read this photo automatically (' + e.message + '). Enter the numbers by hand below.' } : d));
+      }
+    });
+  };
+
+  const updateDraft = (tempId, patch) => setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, ...patch } : d));
+  const removeDraft = (tempId) => setDrafts((prev) => prev.filter((d) => d.tempId !== tempId));
+
+  const saveAll = () => {
+    const runningCount = new Map();
+    buckets.forEach((b) => runningCount.set(b.sessionDate, (runningCount.get(b.sessionDate) || 0) + 1));
+    const toSave = [];
+    drafts.forEach((d) => {
+      const count = (runningCount.get(d.sessionDate) || 0) + 1;
+      runningCount.set(d.sessionDate, count);
+      toSave.push({
+        id: uid(), sessionDate: d.sessionDate, bucketNum: count, createdAt: Date.now(),
+        pitchSpeed: d.pitchSpeed, P: d.P, AB: d.AB, H: d.H, EBH: d.EBH, HR: d.HR,
+        AVG: d.AVG, LDpct: d.LDpct, AvgVel: d.AvgVel, MaxVel: d.MaxVel, MaxDist: d.MaxDist,
+        MaxPoints: d.MaxPoints, TotalPts: d.TotalPts,
+      });
+    });
+    onSaveSession(toSave);
+    setDrafts([]);
+  };
+
+  const anyProcessing = drafts.some((d) => d.status === 'processing');
+
+  return (
+    <div>
+      <SectionTitle sub="Snap up to three bucket photos from the same session, then check the numbers before saving.">Add a session</SectionTitle>
+
+      {!apiKey && (
+        <Panel style={{ padding: 14, marginBottom: 14, borderColor: COLORS.amber }}>
+          <div style={{ color: COLORS.amber, fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Add your API key first</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 12.5 }}>Photo-reading needs an Anthropic API key. Tap the ⚙ in the top right to add one.</div>
+        </Panel>
+      )}
+
+      <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple style={{ display: 'none' }}
+        onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ''; }} />
+
+      <button onClick={() => fileInputRef.current?.click()}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          background: COLORS.clay, color: '#fff', borderRadius: 14, padding: '14px 16px', fontSize: 15, fontWeight: 600, border: 'none' }}>
+        🖼️ Choose bucket photos
+      </button>
+
+      {drafts.length === 0 && (
+        <div style={{ marginTop: 16 }}>
+          <EmptyState icon="📷" title="No photos yet" body="Take a photo of the HitTrax screen at the end of each bucket, then upload them here together." />
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 16 }}>
+        {drafts.map((d, i) => (
+          <Panel key={d.tempId} style={{ padding: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              {d.previewUrl ? (
+                <img src={d.previewUrl} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10, border: `1px solid ${COLORS.border}` }} />
+              ) : (
+                <div style={{ width: 64, height: 64, borderRadius: 10, background: COLORS.panelAlt, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span className="spinner" style={{ color: COLORS.textMuted }} />
+                </div>
+              )}
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 16 }}>Bucket {i + 1}</span>
+                  <button onClick={() => removeDraft(d.tempId)} style={{ background: 'none', border: 'none', color: COLORS.textFaint, fontSize: 16 }}>✕</button>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Session date</span>
+                  <input type="date" value={d.sessionDate} onChange={(e) => updateDraft(d.tempId, { sessionDate: e.target.value })}
+                    style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, padding: '4px 8px', fontSize: 13 }} />
+                </label>
+                {d.status === 'processing' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: COLORS.amber, fontSize: 12, marginTop: 6 }}>
+                    <span className="spinner" /> Reading stats off the screenshot…
+                  </div>
+                )}
+                {d.status === 'error' && (
+                  <div style={{ color: COLORS.danger, fontSize: 12, marginTop: 6 }}>⚠️ {d.errorMsg}</div>
+                )}
+              </div>
+            </div>
+            {(d.status === 'done' || d.status === 'error') && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 12 }}>
+                {REVIEW_FIELD_ORDER.map((key) => (
+                  <NumberField key={key} label={FIELD_LABELS[key]} value={d[key]}
+                    decimals={key === 'AVG' ? 3 : (key === 'pitchSpeed' || key === 'AvgVel' || key === 'MaxVel') ? 1 : 0}
+                    onChange={(v) => updateDraft(d.tempId, { [key]: v })} />
+                ))}
+              </div>
+            )}
+          </Panel>
+        ))}
+      </div>
+
+      {drafts.length > 0 && (
+        <button onClick={saveAll} disabled={anyProcessing}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16,
+            background: anyProcessing ? COLORS.borderSoft : COLORS.amber, color: anyProcessing ? COLORS.textFaint : '#1B140A',
+            borderRadius: 14, padding: '14px 16px', fontSize: 15, fontWeight: 700, border: 'none' }}>
+          💾 {anyProcessing ? 'Still reading photos…' : `Save ${drafts.length} bucket${drafts.length > 1 ? 's' : ''}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Log tab                                                                 */
+/* ---------------------------------------------------------------------- */
+
+function BucketRow({ bucket, onDelete, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(bucket);
+  useEffect(() => { setDraft(bucket); }, [bucket]);
+
+  if (editing) {
+    return (
+      <div style={{ padding: 12, borderTop: `1px solid ${COLORS.borderSoft}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ color: COLORS.text, fontSize: 14, fontWeight: 600 }}>Bucket {bucket.bucketNum}</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => { onUpdate(draft); setEditing(false); }} style={{ background: COLORS.amber, border: 'none', borderRadius: 8, padding: '6px 10px', color: '#1B140A' }}>✓</button>
+            <button onClick={() => setEditing(false)} style={{ background: COLORS.panelAlt, border: 'none', borderRadius: 8, padding: '6px 10px', color: COLORS.textMuted }}>✕</button>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+          {REVIEW_FIELD_ORDER.map((key) => (
+            <NumberField key={key} label={FIELD_LABELS[key]} value={draft[key]}
+              decimals={key === 'AVG' ? 3 : (key === 'pitchSpeed' || key === 'AvgVel' || key === 'MaxVel') ? 1 : 0}
+              onChange={(v) => setDraft((prev) => ({ ...prev, [key]: v }))} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: 12, borderTop: `1px solid ${COLORS.borderSoft}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ color: COLORS.text, fontSize: 14, fontWeight: 600 }}>Bucket {bucket.bucketNum}</span>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <button onClick={() => setEditing(true)} style={{ background: 'none', border: 'none', color: COLORS.textMuted }}>✏️</button>
+          <button onClick={onDelete} style={{ background: 'none', border: 'none', color: COLORS.textFaint }}>🗑</button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', columnGap: 8, rowGap: 6, marginTop: 8 }}>
+        {REVIEW_FIELD_ORDER.map((key) => (
+          <div key={key}>
+            <div style={{ color: COLORS.textFaint, fontSize: 10 }}>{FIELD_LABELS[key]}</div>
+            <div style={{ color: COLORS.text, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+              {fmtVal(bucket[key], key === 'AVG' ? 3 : (key === 'pitchSpeed' || key === 'AvgVel' || key === 'MaxVel') ? 1 : 0)}
+              {bucket[key] != null && FIELD_UNITS[key] ? ' ' + FIELD_UNITS[key] : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+function SessionCard({ session, onDeleteBucket, onUpdateBucket }) {
+  const [open, setOpen] = useState(false);
+  const a = session.agg;
+  return (
+    <Panel style={{ overflow: 'hidden' }}>
+      <button onClick={() => setOpen((o) => !o)}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 14, background: 'none', border: 'none', textAlign: 'left' }}>
+        <div>
+          <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 17 }}>{fmtDateLong(session.date)}</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 2 }}>
+            {session.buckets.length} bucket{session.buckets.length > 1 ? 's' : ''} · AVG {fmtVal(a.AVG, 3)} · Max EV {fmtVal(a.MaxVel, 1)} mph
+          </div>
+        </div>
+        <span style={{ color: COLORS.textMuted }}>{open ? '⌃' : '⌄'}</span>
+      </button>
+      {open && <div>{session.buckets.map((b) => (
+        <BucketRow key={b.id} bucket={b} onDelete={() => onDeleteBucket(b.id)} onUpdate={(patch) => onUpdateBucket(b.id, patch)} />
+      ))}</div>}
+    </Panel>
+  );
+}
+function LogTab({ buckets, onDeleteBucket, onUpdateBucket }) {
+  const sessions = groupBySession(buckets);
+  return (
+    <div>
+      <SectionTitle sub="Every session, grouped by date. Tap a session to see each bucket.">History</SectionTitle>
+      {sessions.length === 0 ? (
+        <EmptyState icon="🕘" title="No sessions logged yet" body="Upload your first set of bucket photos to start building history." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {sessions.map((s) => <SessionCard key={s.date} session={s} onDeleteBucket={onDeleteBucket} onUpdateBucket={onUpdateBucket} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Progress tab                                                            */
+/* ---------------------------------------------------------------------- */
+
+function ProgressTab({ buckets }) {
+  const [metricKey, setMetricKey] = useState('MaxVel');
+  const sessions = groupBySession(buckets).slice().sort((a,b)=> (a.date > b.date ? 1 : -1));
+  const metric = METRICS.find((m) => m.key === metricKey);
+  const chartData = sessions.map((s) => ({ date: fmtDateShort(s.date), value: Number((s.agg[metricKey] || 0).toFixed(metric.decimals)) }));
+
+  return (
+    <div>
+      <SectionTitle sub="See how a stat has trended session over session.">Progress</SectionTitle>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        {METRICS.map((m) => (
+          <button key={m.key} onClick={() => setMetricKey(m.key)}
+            style={{ padding: '6px 12px', borderRadius: 999, fontSize: 12.5, border: `1px solid ${m.key === metricKey ? COLORS.amber : COLORS.border}`,
+              background: m.key === metricKey ? 'rgba(227,163,62,0.15)' : 'transparent', color: m.key === metricKey ? COLORS.amber : COLORS.textMuted }}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {sessions.length === 0 ? (
+        <EmptyState icon="📈" title="Nothing to chart yet" body="Log a couple of sessions and this will fill in with a trend line." />
+      ) : (
+        <Panel style={{ padding: 16 }}>
+          <div style={{ color: COLORS.textMuted, fontSize: 12, marginBottom: 8 }}>{metric.label}{metric.unit ? ` (${metric.unit})` : ''} by session</div>
+          <SimpleLineChart data={chartData} />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Records tab                                                            */
+/* ---------------------------------------------------------------------- */
+
+function RecordsTab({ buckets }) {
+  const recordMetrics = [
+    { key: 'MaxVel', label: 'Max Exit Velo', unit: 'mph', decimals: 1 },
+    { key: 'MaxDist', label: 'Max Distance', unit: 'ft', decimals: 0 },
+    { key: 'MaxPoints', label: 'Max Points (bucket)', unit: 'pts', decimals: 0 },
+    { key: 'AVG', label: 'Best Bucket AVG', unit: '', decimals: 3 },
+    { key: 'AvgVel', label: 'Best Avg Exit Velo', unit: 'mph', decimals: 1 },
+    { key: 'TotalPts', label: 'Best Total Points (bucket)', unit: 'pts', decimals: 0 },
+  ];
+  const records = recordMetrics.map((m) => {
+    const withVal = buckets.filter((b) => b[m.key] !== null && b[m.key] !== undefined);
+    if (withVal.length === 0) return { ...m, value: null, date: null };
+    const best = withVal.reduce((a,b) => (b[m.key] > a[m.key] ? b : a));
+    return { ...m, value: best[m.key], date: best.sessionDate, bucketNum: best.bucketNum };
+  });
+  return (
+    <div>
+      <SectionTitle sub="Personal bests across every bucket ever logged.">Records</SectionTitle>
+      {buckets.length === 0 ? (
+        <EmptyState icon="🏆" title="No records yet" body="Once you log a session, standout numbers will show up here." />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {records.map((r) => (
+            <Panel key={r.key} style={{ padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+                <span style={{ fontSize: 13 }}>🏆</span>
+                <span style={{ color: COLORS.textMuted, fontSize: 11 }}>{r.label}</span>
+              </div>
+              <div style={{ color: COLORS.amber, fontFamily: HEADLINE_FONT, fontSize: 26 }}>
+                {r.value === null ? '—' : fmtVal(r.value, r.decimals)}
+                <span style={{ fontSize: 13, color: COLORS.textMuted, marginLeft: 4 }}>{r.unit}</span>
+              </div>
+              {r.date && <div style={{ color: COLORS.textFaint, fontSize: 11, marginTop: 4 }}>{fmtDateShort(r.date)} · Bucket {r.bucketNum}</div>}
+            </Panel>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Goals tab                                                              */
+/* ---------------------------------------------------------------------- */
+
+function GoalsTab({ buckets, goals, onAddGoal, onDeleteGoal }) {
+  const [metricKey, setMetricKey] = useState(METRICS[0].key);
+  const [target, setTarget] = useState('');
+  const bestFor = (key) => {
+    const withVal = buckets.filter((b) => b[key] !== null && b[key] !== undefined);
+    return withVal.length === 0 ? 0 : Math.max(...withVal.map((b) => b[key]));
+  };
+  const submit = () => {
+    if (!target || Number(target) <= 0) return;
+    onAddGoal({ id: uid(), metric: metricKey, target: Number(target) });
+    setTarget('');
+  };
+  return (
+    <div>
+      <SectionTitle sub="Set a target for a stat and watch the progress bar fill in as new bests come in.">Goals</SectionTitle>
+      <Panel style={{ padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Stat</span>
+            <select value={metricKey} onChange={(e) => setMetricKey(e.target.value)}
+              style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '8px 10px', fontSize: 14 }}>
+              {METRICS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Target</span>
+            <input type="number" inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)}
+              placeholder={METRICS.find((m) => m.key === metricKey)?.unit || ''}
+              style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '8px 10px', fontSize: 14 }} />
+          </label>
+          <button onClick={submit} style={{ marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: COLORS.clay, color: '#fff', borderRadius: 10, padding: 10, fontSize: 14, fontWeight: 600, border: 'none' }}>+ Add goal</button>
+        </div>
+      </Panel>
+      {goals.length === 0 ? (
+        <EmptyState icon="🎯" title="No goals set" body="Add a target above — for example, a max exit velo to chase this season." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {goals.map((g) => {
+            const m = METRICS.find((mm) => mm.key === g.metric);
+            const current = bestFor(g.metric);
+            const pct = Math.max(0, Math.min(100, (current / g.target) * 100));
+            const reached = current >= g.target;
+            return (
+              <Panel key={g.id} style={{ padding: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 16 }}>{m?.label}</span>
+                  <button onClick={() => onDeleteGoal(g.id)} style={{ background: 'none', border: 'none', color: COLORS.textFaint }}>🗑</button>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, marginBottom: 8 }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Best so far: {fmtVal(current, m?.decimals)} {m?.unit}</span>
+                  <span style={{ color: reached ? COLORS.amber : COLORS.textMuted, fontSize: 12, fontWeight: 600 }}>Goal: {fmtVal(g.target, m?.decimals)} {m?.unit}</span>
+                </div>
+                <div style={{ height: 8, background: COLORS.panelAlt, borderRadius: 999, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: pct + '%', background: reached ? COLORS.amber : COLORS.clay, transition: 'width 0.4s ease' }} />
+                </div>
+                {reached && <div style={{ color: COLORS.amber, fontSize: 12, marginTop: 6, fontWeight: 600 }}>Goal reached! 🎉</div>}
+              </Panel>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Settings panel                                                         */
+/* ---------------------------------------------------------------------- */
+
+function SettingsPanel({ apiKey, onSave, onClose }) {
+  const [value, setValue] = useState(apiKey || '');
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'flex-end' }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: COLORS.panel, borderTop: `1px solid ${COLORS.border}`, borderRadius: '20px 20px 0 0', padding: 20, width: '100%' }}>
+        <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 19, marginBottom: 4 }}>Anthropic API key</div>
+        <div style={{ color: COLORS.textMuted, fontSize: 12.5, lineHeight: 1.5, marginBottom: 12 }}>
+          Needed for photo-reading. Get one at console.anthropic.com. It's stored only in this browser, on this device, and used to call Claude directly from your phone.
+        </div>
+        <input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-..."
+          style={{ width: '100%', background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '10px 12px', fontSize: 14, marginBottom: 12 }} />
+        <button onClick={() => { onSave(value.trim()); onClose(); }}
+          style={{ width: '100%', background: COLORS.amber, color: '#1B140A', border: 'none', borderRadius: 12, padding: 12, fontSize: 15, fontWeight: 700 }}>
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* App shell                                                               */
+/* ---------------------------------------------------------------------- */
+
+function App() {
+  const [tab, setTab] = useState('upload');
+  const [buckets, setBuckets] = useState(() => storage.get('hittrax_buckets', []));
+  const [goals, setGoals] = useState(() => storage.get('hittrax_goals', []));
+  const [apiKey, setApiKey] = useState(() => storage.get('hittrax_api_key', ''));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const persistBuckets = (next) => { setBuckets(next); storage.set('hittrax_buckets', next); };
+  const persistGoals = (next) => { setGoals(next); storage.set('hittrax_goals', next); };
+  const persistApiKey = (next) => { setApiKey(next); storage.set('hittrax_api_key', next); };
+
+  const handleSaveSession = (newBuckets) => persistBuckets([...buckets, ...newBuckets]);
+  const handleDeleteBucket = (id) => persistBuckets(buckets.filter((b) => b.id !== id));
+  const handleUpdateBucket = (id, patch) => persistBuckets(buckets.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  const handleAddGoal = (goal) => persistGoals([...goals.filter((g) => g.metric !== goal.metric), goal]);
+  const handleDeleteGoal = (id) => persistGoals(goals.filter((g) => g.id !== id));
+
+  return (
+    <div style={{ background: COLORS.bg, minHeight: '100vh', fontFamily: BODY_FONT, color: COLORS.text, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '20px 16px 12px', borderBottom: `1px solid ${COLORS.borderSoft}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 13 }}>📌</span>
+            <span style={{ color: COLORS.textMuted, fontSize: 11, letterSpacing: 0.5 }}>Batting Practice</span>
+          </div>
+          <h1 style={{ fontFamily: HEADLINE_FONT, fontSize: 28, marginTop: 2, color: COLORS.chalk }}>Session Tracker</h1>
+        </div>
+        <button onClick={() => setSettingsOpen(true)} style={{ background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 20, marginTop: 4 }}>⚙</button>
+      </div>
+
+      <div style={{ flex: 1, padding: '18px 14px 90px', maxWidth: 640, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        {tab === 'upload' && <UploadTab buckets={buckets} apiKey={apiKey} onSaveSession={handleSaveSession} onNeedApiKey={() => setSettingsOpen(true)} />}
+        {tab === 'log' && <LogTab buckets={buckets} onDeleteBucket={handleDeleteBucket} onUpdateBucket={handleUpdateBucket} />}
+        {tab === 'progress' && <ProgressTab buckets={buckets} />}
+        {tab === 'records' && <RecordsTab buckets={buckets} />}
+        {tab === 'goals' && <GoalsTab buckets={buckets} goals={goals} onAddGoal={handleAddGoal} onDeleteGoal={handleDeleteGoal} />}
+      </div>
+
+      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: COLORS.panel, borderTop: `1px solid ${COLORS.border}`, display: 'flex', paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
+        {TABS.map((t) => {
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, background: 'none', border: 'none', padding: '10px 4px 2px' }}>
+              <span style={{ fontSize: 18, opacity: active ? 1 : 0.55 }}>{t.icon}</span>
+              <span style={{ fontSize: 10.5, color: active ? COLORS.amber : COLORS.textFaint }}>{t.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {settingsOpen && <SettingsPanel apiKey={apiKey} onSave={persistApiKey} onClose={() => setSettingsOpen(false)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

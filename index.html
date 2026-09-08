@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Session Tracker</title>
+
+<!-- Home-screen app behavior on iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Session Tracker" />
+<link rel="apple-touch-icon" href="icon-180.png" />
+<meta name="theme-color" content="#0F1C16" />
+
+<style>
+  html, body { margin: 0; padding: 0; background: #0F1C16; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  input, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    display: inline-block; width: 1em; height: 1em; border-radius: 999px;
+    border: 2px solid rgba(255,255,255,0.25); border-top-color: currentColor;
+    animation: spin 0.8s linear infinite;
+  }
+</style>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any/dist/heic2any.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/plain" id="app-source">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ---------------------------------------------------------------------- */
+/* Design tokens                                                          */
+/* ---------------------------------------------------------------------- */
+
+const COLORS = {
+  bg: '#07080B', panel: '#0E1015', panelAlt: '#161821', border: '#272B35',
+  borderSoft: '#1B1E26', text: '#F5F4F0', textMuted: '#9096A3', textFaint: '#565C6B',
+  red: '#E2261C', redDim: '#7A2420', green: '#3ECF57', blue: '#3B5FE8', gold: '#D4A24C', violet: '#8C6FEA', orange: '#E8791E',
+  amber: '#E2261C', clay: '#E2261C', clayDark: '#B81C14', danger: '#E2261C', chalk: '#F5F4F0',
+};
+const HEADLINE_FONT = "'Iowan Old Style', 'Palatino Linotype', Georgia, serif";
+const BODY_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+
+/* ---------------------------------------------------------------------- */
+/* Icon set — circular red line-art buttons, matching the HitTrax scoreboard UI */
+/* ---------------------------------------------------------------------- */
+
+const GLYPHS = {
+  upload: (c, sw) => <><rect x="6.5" y="9" width="11" height="8" rx="1.4" stroke={c} strokeWidth={sw} /><circle cx="12" cy="13" r="2.1" stroke={c} strokeWidth={sw} /><path d="M9.5 9L10.3 7.3H13.7L14.5 9" stroke={c} strokeWidth={sw} strokeLinecap="round" /></>,
+  log: (c, sw) => <><circle cx="12" cy="12.5" r="5.3" stroke={c} strokeWidth={sw} /><path d="M12 9.6V12.6L14.2 14" stroke={c} strokeWidth={sw} strokeLinecap="round" /></>,
+  progress: (c, sw) => <><path d="M6.5 15.5L10 11.7L12.6 14L17.5 8.7" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" fill="none" /><path d="M14 8.5H17.5V12" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" fill="none" /></>,
+  records: (c, sw) => <><path d="M8.3 7.5H15.7V11C15.7 13.2 14.1 15 12 15C9.9 15 8.3 13.2 8.3 11V7.5Z" stroke={c} strokeWidth={sw} /><path d="M8.3 8.6H6.7C6.4 8.6 6.2 8.9 6.3 9.2C6.6 10.2 7.3 11 8.3 11.3" stroke={c} strokeWidth={sw} strokeLinecap="round" fill="none" /><path d="M15.7 8.6H17.3C17.6 8.6 17.8 8.9 17.7 9.2C17.4 10.2 16.7 11 15.7 11.3" stroke={c} strokeWidth={sw} strokeLinecap="round" fill="none" /><path d="M12 15V16.8" stroke={c} strokeWidth={sw} /><path d="M9.7 17.3H14.3" stroke={c} strokeWidth={sw} strokeLinecap="round" /></>,
+  goals: (c, sw) => <><circle cx="12" cy="12" r="5.4" stroke={c} strokeWidth={sw} /><circle cx="12" cy="12" r="2.8" stroke={c} strokeWidth={sw} /><circle cx="12" cy="12" r="0.6" fill={c} /></>,
+  gear: (c, sw) => <><circle cx="12" cy="12" r="3.1" stroke={c} strokeWidth={sw} /><path d="M12 6.6V8.3M12 15.7V17.4M17.4 12H15.7M8.3 12H6.6M15.8 8.2L14.6 9.4M9.4 14.6L8.2 15.8M15.8 15.8L14.6 14.6M9.4 9.4L8.2 8.2" stroke={c} strokeWidth={sw} strokeLinecap="round" /></>,
+};
+
+function Icon({ name, size = 22, tone = 'muted', color, circle = true }) {
+  const c = color || (tone === 'red' ? COLORS.red : tone === 'white' ? COLORS.text : COLORS.textFaint);
+  const sw = 1.5;
+  const glyph = GLYPHS[name];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      {circle && <circle cx="12" cy="12" r="10.6" stroke={c} strokeWidth={sw} />}
+      {glyph && glyph(c, sw)}
+    </svg>
+  );
+}
+
+function LineIcon({ name, size = 18, tone = 'muted', color }) {
+  const c = color || (tone === 'red' ? COLORS.red : tone === 'white' ? COLORS.text : COLORS.textFaint);
+  const sw = 1.8;
+  const paths = {
+    close: <path d="M6 6L18 18M18 6L6 18" stroke={c} strokeWidth={sw} strokeLinecap="round" />,
+    check: <path d="M5.5 12.5L9.5 16.5L18.5 7.5" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" fill="none" />,
+    plus: <path d="M12 5.5V18.5M5.5 12H18.5" stroke={c} strokeWidth={sw} strokeLinecap="round" />,
+    trash: <><path d="M5.5 7.5H18.5" stroke={c} strokeWidth={sw} strokeLinecap="round" /><path d="M9.5 7.5V5.8C9.5 5.3 9.9 5 10.3 5H13.7C14.1 5 14.5 5.3 14.5 5.8V7.5" stroke={c} strokeWidth={sw} strokeLinecap="round" fill="none" /><path d="M7.3 7.5L8 18C8.05 18.6 8.5 19 9.1 19H14.9C15.5 19 15.95 18.6 16 18L16.7 7.5" stroke={c} strokeWidth={sw} strokeLinecap="round" fill="none" /></>,
+    pencil: <><path d="M14.6 5.8L18.2 9.4L9.6 18H6V14.4L14.6 5.8Z" stroke={c} strokeWidth={sw} strokeLinejoin="round" fill="none" /><path d="M12.8 7.6L16.4 11.2" stroke={c} strokeWidth={sw} /></>,
+    chevronDown: <path d="M6.5 9.5L12 15L17.5 9.5" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" fill="none" />,
+    chevronUp: <path d="M6.5 14.5L12 9L17.5 14.5" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" fill="none" />,
+    save: <><path d="M6 5.5H16L18.5 8V18.5H6V5.5Z" stroke={c} strokeWidth={sw} strokeLinejoin="round" fill="none" /><rect x="8.5" y="5.5" width="5.5" height="4" stroke={c} strokeWidth={sw} /><rect x="8.5" y="13" width="7" height="5.5" stroke={c} strokeWidth={sw} /></>,
+    alert: <><path d="M12 5.5L20 18.5H4L12 5.5Z" stroke={c} strokeWidth={sw} strokeLinejoin="round" fill="none" /><path d="M12 10.5V14" stroke={c} strokeWidth={sw} strokeLinecap="round" /><circle cx="12" cy="16.3" r="0.6" fill={c} /></>,
+    photo: <><rect x="4.5" y="6.5" width="15" height="11" rx="1.2" stroke={c} strokeWidth={sw} /><circle cx="9" cy="11.5" r="1.8" stroke={c} strokeWidth={sw} /><path d="M6 15.5L9.5 12.5L12.5 15L15 12.8L18 15.5" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" fill="none" /></>,
+    pin: <><path d="M12 4.5C9.5 4.5 7.5 6.5 7.5 9C7.5 12.2 12 18.5 12 18.5C12 18.5 16.5 12.2 16.5 9C16.5 6.5 14.5 4.5 12 4.5Z" stroke={c} strokeWidth={sw} strokeLinejoin="round" fill="none" /><circle cx="12" cy="9" r="1.7" stroke={c} strokeWidth={sw} /></>,
+  };
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none">{paths[name]}</svg>;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Domain constants                                                       */
+/* ---------------------------------------------------------------------- */
+
+const FIELD_LABELS = {
+  pitchSpeed: 'Pitch Speed', P: 'Pitches', AB: 'At-Bats', H: 'Hits',
+  EBH: 'Extra Base Hits', HR: 'Home Runs', AVG: 'AVG', LDpct: 'Line Drive %',
+  AvgVel: 'Avg Exit Velo', MaxVel: 'Max Exit Velo', MaxDist: 'Max Distance',
+  MaxPoints: 'Max Points', TotalPts: 'Total Points',
+};
+const FIELD_UNITS = {
+  pitchSpeed: 'mph', P: '', AB: '', H: '', EBH: '', HR: '', AVG: '',
+  LDpct: '%', AvgVel: 'mph', MaxVel: 'mph', MaxDist: 'ft', MaxPoints: 'pts', TotalPts: 'pts',
+};
+const REVIEW_FIELD_ORDER = ['pitchSpeed','P','AB','H','EBH','HR','AVG','LDpct','AvgVel','MaxVel','MaxDist','MaxPoints','TotalPts'];
+
+const METRICS = [
+  { key: 'MaxVel', label: 'Max Exit Velo', unit: 'mph', decimals: 1 },
+  { key: 'AvgVel', label: 'Avg Exit Velo', unit: 'mph', decimals: 1 },
+  { key: 'MaxDist', label: 'Max Distance', unit: 'ft', decimals: 0 },
+  { key: 'AVG', label: 'Batting Avg', unit: '', decimals: 3 },
+  { key: 'MaxPoints', label: 'Max Points', unit: 'pts', decimals: 0 },
+  { key: 'TotalPts', label: 'Total Points', unit: 'pts', decimals: 0 },
+  { key: 'LDpct', label: 'Line Drive %', unit: '%', decimals: 0 },
+  { key: 'PitchSpeed', label: 'Pitch Speed', unit: 'mph', decimals: 1 },
+];
+
+const TABS = [
+  { key: 'upload', label: 'Upload', icon: 'upload', color: COLORS.red },
+  { key: 'log', label: 'Log', icon: 'log', color: COLORS.blue },
+  { key: 'progress', label: 'All Statistics', icon: 'progress', color: COLORS.green },
+  { key: 'goalsRecords', label: 'Goals & Records', icon: 'records', color: COLORS.orange },
+];
+
+/* ---------------------------------------------------------------------- */
+/* Storage (plain localStorage — this is a real standalone page)          */
+/* ---------------------------------------------------------------------- */
+
+const storage = {
+  get(key, fallback) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+    catch (e) { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.error(e); }
+  },
+};
+
+/* ---------------------------------------------------------------------- */
+/* Helpers                                                                 */
+/* ---------------------------------------------------------------------- */
+
+function uid() {
+  try { return crypto.randomUUID(); } catch (e) { return 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2); }
+}
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function fmtDateShort(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+function fmtDateLong(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
+function fmtVal(val, decimals) {
+  if (val === null || val === undefined || Number.isNaN(val)) return '—';
+  if (decimals === 3) return val.toFixed(3).replace(/^0\./, '.');
+  return decimals ? val.toFixed(decimals) : Math.round(val).toString();
+}
+
+/* Best-effort EXIF "date taken" extractor — scans raw bytes for an "Exif"
+   marker followed by a TIFF header, then walks IFD0 (and the Exif SubIFD)
+   for tag 0x9003 (DateTimeOriginal) or 0x0132 (DateTime). */
+function extractExifDateString(buffer) {
+  try {
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+    for (let i = 0; i < bytes.length - 12; i++) {
+      if (bytes[i] === 0x45 && bytes[i+1] === 0x78 && bytes[i+2] === 0x69 && bytes[i+3] === 0x66) {
+        const tiffStart = i + 6;
+        if (tiffStart + 8 > bytes.length) continue;
+        const b0 = bytes[tiffStart], b1 = bytes[tiffStart+1];
+        let little;
+        if (b0 === 0x49 && b1 === 0x49) little = true;
+        else if (b0 === 0x4D && b1 === 0x4D) little = false;
+        else continue;
+        try { const found = parseTiffForDate(view, tiffStart, little); if (found) return found; }
+        catch (e) {}
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+function parseTiffForDate(view, tiffStart, little) {
+  const ifd0Offset = view.getUint32(tiffStart + 4, little);
+  return parseIFDForDate(view, tiffStart, tiffStart + ifd0Offset, little);
+}
+function parseIFDForDate(view, tiffStart, ifdOffset, little) {
+  if (ifdOffset + 2 > view.byteLength) return null;
+  const entryCount = view.getUint16(ifdOffset, little);
+  let dateTime = null, exifIFDOffset = null;
+  for (let e = 0; e < entryCount; e++) {
+    const entryOffset = ifdOffset + 2 + e * 12;
+    if (entryOffset + 12 > view.byteLength) break;
+    const tag = view.getUint16(entryOffset, little);
+    const count = view.getUint32(entryOffset + 4, little);
+    const valueOffset = entryOffset + 8;
+    if (tag === 0x0132 || tag === 0x9003) {
+      let dataStart = count <= 4 ? valueOffset : tiffStart + view.getUint32(valueOffset, little);
+      let str = '';
+      for (let c = 0; c < count - 1 && dataStart + c < view.byteLength; c++) str += String.fromCharCode(view.getUint8(dataStart + c));
+      if (str) { dateTime = str; if (tag === 0x9003) return dateTime; }
+    }
+    if (tag === 0x8769) exifIFDOffset = view.getUint32(valueOffset, little);
+  }
+  if (exifIFDOffset) { const sub = parseIFDForDate(view, tiffStart, tiffStart + exifIFDOffset, little); if (sub) return sub; }
+  return dateTime;
+}
+function exifStringToISODate(str) {
+  const m = /^(\d{4}):(\d{2}):(\d{2})/.exec(str || '');
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+/* SHA-256 fingerprint of a file's raw bytes, used to spot re-uploads of the
+   exact same photo. Requires a secure context (https or localhost) — on
+   file:// or plain http this quietly returns null and duplicate checking
+   is skipped rather than breaking the upload. */
+async function hashBuffer(buffer) {
+  try {
+    if (!window.crypto || !window.crypto.subtle) return null;
+    const digest = await window.crypto.subtle.digest('SHA-256', buffer);
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) { return null; }
+}
+
+async function fileToJpegDataUrl(file) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    return drawToJpeg(bitmap, bitmap.width, bitmap.height);
+  } catch (e) {
+    try {
+      return await decodeViaImageTag(file);
+    } catch (e2) {
+      if (typeof heic2any === 'undefined') throw e2;
+      const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+      const outBlob = Array.isArray(converted) ? converted[0] : converted;
+      return await blobToDataUrl(outBlob);
+    }
+  }
+}
+function decodeViaImageTag(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try { const d = drawToJpeg(img, img.naturalWidth, img.naturalHeight); URL.revokeObjectURL(url); resolve(d); }
+      catch (err) { URL.revokeObjectURL(url); reject(err); }
+    };
+    img.onerror = (err) => { URL.revokeObjectURL(url); reject(err); };
+    img.src = url;
+  });
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+function drawToJpeg(source, w, h) {
+  const MAX_DIM = 1600;
+  let scale = 1;
+  if (w > MAX_DIM || h > MAX_DIM) scale = MAX_DIM / Math.max(w, h);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.85);
+}
+
+const DEFAULT_CROP = { x: 0.55, y: 0.38, w: 0.45, h: 0.42 };
+
+/* Crops the "spray chart" mini-diamond out of a full HitTrax screen photo,
+   using either the saved calibration or the default region it typically
+   occupies on screen. Returns a JPEG data URL. */
+function cropSprayChart(jpegDataUrl, crop = DEFAULT_CROP) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const cropX = w * crop.x, cropY = h * crop.y, cropW = w * crop.w, cropH = h * crop.h;
+        const outW = 520;
+        const outH = Math.round(outW * (cropH / cropW));
+        const canvas = document.createElement('canvas');
+        canvas.width = outW; canvas.height = outH;
+        canvas.getContext('2d').drawImage(img, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      } catch (e) { reject(e); }
+    };
+    img.onerror = reject;
+    img.src = jpegDataUrl;
+  });
+}
+
+const EXTRACTION_PROMPT = `This is a photo of a HitTrax baseball hitting-analytics screen (a TV/monitor showing a batting practice session).
+
+Read two things:
+1. The "Pitch" speed value shown near the top of the screen (the speed for the most recent swing).
+2. The cumulative stats row near the bottom of the screen, with columns labeled P, AB, H, EBH, HR, AVG, LD%, AvgVel, MaxVel, MaxDist, MaxPoints, TotalPts.
+
+Return ONLY a raw JSON object, no markdown fences, no commentary, with exactly these keys:
+{"pitchSpeed": number|null, "P": number|null, "AB": number|null, "H": number|null, "EBH": number|null, "HR": number|null, "AVG": number|null, "LDpct": number|null, "AvgVel": number|null, "MaxVel": number|null, "MaxDist": number|null, "MaxPoints": number|null, "TotalPts": number|null}
+
+AVG must be a decimal number like 0.500 (not a string). LDpct should be the plain number shown (e.g. 35, not 0.35). If a value is genuinely not visible, use null rather than guessing.`;
+
+async function extractStatsFromImage(base64Jpeg, apiKey) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Jpeg } },
+        { type: 'text', text: EXTRACTION_PROMPT },
+      ]}],
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error('Request failed (' + res.status + '): ' + body.slice(0, 200));
+  }
+  const data = await res.json();
+  const textBlock = (data.content || []).find((b) => b.type === 'text');
+  const raw = textBlock ? textBlock.text : '';
+  const clean = raw.replace(/```json|```/g, '').trim();
+  return JSON.parse(clean);
+}
+
+function aggregateBuckets(bucketList) {
+  const sumP = bucketList.reduce((s,b)=>s+(b.P||0),0);
+  const sumAB = bucketList.reduce((s,b)=>s+(b.AB||0),0);
+  const sumH = bucketList.reduce((s,b)=>s+(b.H||0),0);
+  const sumEBH = bucketList.reduce((s,b)=>s+(b.EBH||0),0);
+  const sumHR = bucketList.reduce((s,b)=>s+(b.HR||0),0);
+  const AVG = sumAB > 0 ? sumH / sumAB : 0;
+  const weightedVelSum = bucketList.reduce((s,b)=>s+(b.AvgVel||0)*(b.AB||0),0);
+  const AvgVel = sumAB > 0 ? weightedVelSum / sumAB : (bucketList.reduce((s,b)=>s+(b.AvgVel||0),0)/(bucketList.length||1));
+  const MaxVel = Math.max(0, ...bucketList.map(b=>b.MaxVel||0));
+  const MaxDist = Math.max(0, ...bucketList.map(b=>b.MaxDist||0));
+  const MaxPoints = Math.max(0, ...bucketList.map(b=>b.MaxPoints||0));
+  const TotalPts = bucketList.reduce((s,b)=>s+(b.TotalPts||0),0);
+  const LDpct = bucketList.reduce((s,b)=>s+(b.LDpct||0),0)/(bucketList.length||1);
+  const PitchSpeed = bucketList.reduce((s,b)=>s+(b.pitchSpeed||0),0)/(bucketList.length||1);
+  return { P: sumP, AB: sumAB, H: sumH, EBH: sumEBH, HR: sumHR, AVG, AvgVel, MaxVel, MaxDist, MaxPoints, TotalPts, LDpct, PitchSpeed };
+}
+function groupBySession(buckets) {
+  const map = new Map();
+  buckets.forEach((b) => { if (!map.has(b.sessionDate)) map.set(b.sessionDate, []); map.get(b.sessionDate).push(b); });
+  return Array.from(map.entries())
+    .map(([date, list]) => ({ date, buckets: list.sort((a,b)=>a.bucketNum-b.bucketNum), agg: aggregateBuckets(list) }))
+    .sort((a,b)=> (a.date < b.date ? 1 : -1));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Small building blocks                                                  */
+/* ---------------------------------------------------------------------- */
+
+function Panel({ children, style }) {
+  return <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 16, ...style }}>{children}</div>;
+}
+function SectionTitle({ children, sub, iconName, color }) {
+  return (
+    <div style={{ marginBottom: 16, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+      {iconName && <div style={{ marginTop: 3 }}><Icon name={iconName} size={26} color={color} circle={false} /></div>}
+      <div>
+        <h2 style={{ fontFamily: HEADLINE_FONT, color: COLORS.text, fontSize: 22, letterSpacing: 0.2, margin: 0 }}>{children}</h2>
+        {sub && <p style={{ color: COLORS.textMuted, fontSize: 13, marginTop: 4 }}>{sub}</p>}
+      </div>
+    </div>
+  );
+}
+function EmptyState({ iconName, title, body, color }) {
+  return (
+    <Panel style={{ padding: 28, textAlign: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}><Icon name={iconName} size={34} color={color || COLORS.textFaint} /></div>
+      <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 17, marginBottom: 4 }}>{title}</div>
+      <div style={{ color: COLORS.textMuted, fontSize: 13, lineHeight: 1.5 }}>{body}</div>
+    </Panel>
+  );
+}
+function NumberField({ label, value, onChange, decimals }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ color: COLORS.textMuted, fontSize: 11 }}>{label}</span>
+      <input
+        type="number" inputMode="decimal"
+        value={value === null || value === undefined ? '' : value}
+        onChange={(e) => { const v = e.target.value; onChange(v === '' ? null : Number(v)); }}
+        step={decimals === 3 ? 0.001 : decimals ? 0.1 : 1}
+        style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '8px 10px', fontSize: 15, fontVariantNumeric: 'tabular-nums', width: '100%' }}
+      />
+    </label>
+  );
+}
+
+/* Minimal dependency-free line chart */
+function SimpleLineChart({ data, height = 260, color = COLORS.green, decimals = 1, yMin, yMax }) {
+  const width = 600;
+  const padL = 40, padR = 12, padT = 26, padB = 28;
+  if (data.length === 0) return null;
+  const values = data.map(d => d.value);
+  let min = yMin !== undefined ? yMin : Math.min(...values);
+  let max = yMax !== undefined ? yMax : Math.max(...values);
+  if (min === max) { min -= 1; max += 1; }
+  const spanY = max - min;
+  const stepX = data.length > 1 ? (width - padL - padR) / (data.length - 1) : 0;
+  const x = (i) => padL + i * stepX;
+  const y = (v) => padT + (1 - (v - min) / spanY) * (height - padT - padB);
+  const points = data.map((d, i) => `${x(i)},${y(d.value)}`).join(' ');
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}
+      onMouseLeave={() => setHoverIdx(null)}>
+      {[0, 0.5, 1].map((t, i) => (
+        <line key={i} x1={padL} x2={width - padR} y1={padT + t * (height - padT - padB)} y2={padT + t * (height - padT - padB)} stroke={COLORS.borderSoft} strokeWidth="1" />
+      ))}
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+      {data.map((d, i) => (
+        <g key={i}>
+          <text x={x(i)} y={y(d.value) - 10} fontSize={hoverIdx === i ? 11.5 : 10.5} fill={hoverIdx === i ? COLORS.text : COLORS.textMuted}
+            fontWeight={hoverIdx === i ? 700 : 600} textAnchor="middle">{fmtVal(d.value, decimals)}</text>
+          <circle cx={x(i)} cy={y(d.value)} r={hoverIdx === i ? 5 : 3.5} fill={COLORS.text}
+            onMouseEnter={() => setHoverIdx(i)} onTouchStart={() => setHoverIdx(i)} />
+          <text x={x(i)} y={height - 8} fontSize="10" fill={COLORS.textFaint} textAnchor="middle">{d.date}</text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Upload tab                                                              */
+/* ---------------------------------------------------------------------- */
+
+function CropCalibrator({ previewUrl, cropConfig, onApply, onSaveDefault, onClose }) {
+  const [box, setBox] = useState(cropConfig);
+  const pct = (n) => Math.round(n * 100);
+  const setField = (key, pctVal) => setBox((prev) => ({ ...prev, [key]: Math.max(0, Math.min(1, pctVal / 100)) }));
+
+  return (
+    <Panel style={{ padding: 14, marginBottom: 16, borderColor: COLORS.blue }}>
+      <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 16, marginBottom: 4 }}>Calibrate spray chart crop</div>
+      <div style={{ color: COLORS.textMuted, fontSize: 12, marginBottom: 10 }}>
+        Drag the sliders until the box exactly frames the diamond on your photo.
+      </div>
+      {previewUrl ? (
+        <div style={{ position: 'relative', width: '100%', borderRadius: 10, overflow: 'hidden', border: `1px solid ${COLORS.border}` }}>
+          <img src={previewUrl} alt="" style={{ width: '100%', display: 'block' }} />
+          <div style={{
+            position: 'absolute', left: pct(box.x) + '%', top: pct(box.y) + '%', width: pct(box.w) + '%', height: pct(box.h) + '%',
+            border: `2px solid ${COLORS.blue}`, background: 'rgba(59,95,232,0.15)', boxSizing: 'border-box', pointerEvents: 'none',
+          }} />
+        </div>
+      ) : (
+        <div style={{ color: COLORS.textFaint, fontSize: 12, padding: 20, textAlign: 'center' }}>Upload a photo below first to see a live preview here.</div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+        {[
+          { key: 'x', label: 'Left' }, { key: 'y', label: 'Top' },
+          { key: 'w', label: 'Width' }, { key: 'h', label: 'Height' },
+        ].map((f) => (
+          <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ color: COLORS.textMuted, fontSize: 11 }}>{f.label}: {pct(box[f.key])}%</span>
+            <input type="range" min="0" max="100" value={pct(box[f.key])}
+              onChange={(e) => setField(f.key, Number(e.target.value))} />
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button onClick={() => onApply(box)}
+          style={{ flex: 1, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '9px 10px', color: COLORS.text, fontSize: 13, fontWeight: 600 }}>
+          Preview on this photo
+        </button>
+        <button onClick={() => { onSaveDefault(box); onClose(); }}
+          style={{ flex: 1, background: COLORS.blue, border: 'none', borderRadius: 10, padding: '9px 10px', color: '#fff', fontSize: 13, fontWeight: 600 }}>
+          Save as default
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
+function UploadTab({ buckets, apiKey, onSaveSession, onNeedApiKey, cropConfig, onSaveCropConfig }) {
+  const [drafts, setDrafts] = useState([]);
+  const cameraInputRef = useRef(null);
+  const libraryInputRef = useRef(null);
+  const fileRefs = useRef(new Map());   // tempId -> File, kept out of state (not serializable)
+  const batchHashes = useRef(new Map()); // hash -> tempId, for catching dupes within one upload batch
+
+  const runExtraction = async (file, tempId, crop) => {
+    try {
+      const buffer = await file.arrayBuffer();
+      const hash = await hashBuffer(buffer);
+      const exifStr = extractExifDateString(buffer);
+      const isoDate = exifStr ? exifStringToISODate(exifStr) : null;
+      const jpegDataUrl = await fileToJpegDataUrl(file);
+      const base64 = jpegDataUrl.split(',')[1];
+      let sprayUrl = null;
+      try { sprayUrl = await cropSprayChart(jpegDataUrl, crop); } catch (e) { console.error('Spray chart crop failed:', e); }
+      setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, previewUrl: jpegDataUrl, sprayUrl, sessionDate: isoDate || d.sessionDate, fileHash: hash } : d));
+      const stats = await extractStatsFromImage(base64, apiKey);
+      setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, ...stats, status: 'done' } : d));
+    } catch (e) {
+      setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, status: 'error', errorMsg: 'Could not read this photo automatically (' + e.message + '). Enter the numbers by hand below.' } : d));
+    }
+  };
+
+  const handleFiles = async (fileList) => {
+    if (!apiKey) { onNeedApiKey(); return; }
+    const files = Array.from(fileList).slice(0, 10);
+    const newDrafts = files.map((file) => ({
+      tempId: uid(), status: 'checking', errorMsg: null, sessionDate: todayStr(), previewUrl: null, sprayUrl: null,
+      crop: { ...cropConfig }, calibrating: false,
+      fileHash: null, duplicateOf: null,
+      pitchSpeed: null, P: null, AB: null, H: null, EBH: null, HR: null,
+      AVG: null, LDpct: null, AvgVel: null, MaxVel: null, MaxDist: null, MaxPoints: null, TotalPts: null,
+    }));
+    setDrafts((prev) => [...prev, ...newDrafts]);
+
+    files.forEach(async (file, idx) => {
+      const tempId = newDrafts[idx].tempId;
+      fileRefs.current.set(tempId, file);
+      const buffer = await file.arrayBuffer();
+      const hash = await hashBuffer(buffer);
+
+      let duplicateOf = null;
+      if (hash) {
+        const savedMatch = buckets.find((b) => b.fileHash === hash);
+        if (savedMatch) {
+          duplicateOf = { sessionDate: savedMatch.sessionDate, bucketNum: savedMatch.bucketNum };
+        } else if (batchHashes.current.has(hash)) {
+          duplicateOf = { sameBatch: true };
+        } else {
+          batchHashes.current.set(hash, tempId);
+        }
+      }
+
+      if (duplicateOf) {
+        setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, status: 'duplicate', duplicateOf } : d));
+      } else {
+        setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, status: 'processing' } : d));
+        runExtraction(file, tempId, newDrafts[idx].crop);
+      }
+    });
+  };
+
+  const resumeAnyway = (tempId) => {
+    const file = fileRefs.current.get(tempId);
+    if (!file) return;
+    setDrafts((prev) => {
+      const draft = prev.find((d) => d.tempId === tempId);
+      if (draft) runExtraction(file, tempId, draft.crop);
+      return prev.map((d) => d.tempId === tempId ? { ...d, status: 'processing', duplicateOf: null } : d);
+    });
+  };
+
+  const updateDraft = (tempId, patch) => setDrafts((prev) => prev.map((d) => d.tempId === tempId ? { ...d, ...patch } : d));
+  const removeDraft = (tempId) => { fileRefs.current.delete(tempId); setDrafts((prev) => prev.filter((d) => d.tempId !== tempId)); };
+
+  const recropDraft = async (tempId, crop) => {
+    const draft = drafts.find((d) => d.tempId === tempId);
+    if (!draft || !draft.previewUrl) return;
+    try {
+      const sprayUrl = await cropSprayChart(draft.previewUrl, crop);
+      setDrafts((prev) => prev.map((p) => p.tempId === tempId ? { ...p, sprayUrl, crop } : p));
+    } catch (e) { console.error('Recrop failed:', e); }
+  };
+
+  const saveAll = () => {
+    const runningCount = new Map();
+    buckets.forEach((b) => runningCount.set(b.sessionDate, (runningCount.get(b.sessionDate) || 0) + 1));
+    const toSave = [];
+    drafts.forEach((d) => {
+      const count = (runningCount.get(d.sessionDate) || 0) + 1;
+      runningCount.set(d.sessionDate, count);
+      toSave.push({
+        id: uid(), sessionDate: d.sessionDate, bucketNum: count, createdAt: Date.now(),
+        pitchSpeed: d.pitchSpeed, P: d.P, AB: d.AB, H: d.H, EBH: d.EBH, HR: d.HR,
+        AVG: d.AVG, LDpct: d.LDpct, AvgVel: d.AvgVel, MaxVel: d.MaxVel, MaxDist: d.MaxDist,
+        MaxPoints: d.MaxPoints, TotalPts: d.TotalPts, sprayUrl: d.sprayUrl || null, fileHash: d.fileHash || null,
+      });
+    });
+    onSaveSession(toSave);
+    setDrafts([]);
+  };
+
+  const anyProcessing = drafts.some((d) => d.status === 'processing' || d.status === 'checking' || d.status === 'duplicate');
+
+  return (
+    <div>
+      <SectionTitle iconName="upload" color={COLORS.red} sub="Snap up to ten bucket photos from the same session, then check the numbers before saving.">Add a session</SectionTitle>
+
+      {!apiKey && (
+        <Panel style={{ padding: 14, marginBottom: 14, borderColor: COLORS.amber }}>
+          <div style={{ color: COLORS.amber, fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Add your API key first</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 12.5 }}>Photo-reading needs an Anthropic API key. Tap the ⚙ in the top right to add one.</div>
+        </Panel>
+      )}
+
+      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+        onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ''; }} />
+      <input ref={libraryInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
+        onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ''; }} />
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button onClick={() => cameraInputRef.current?.click()}
+          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: COLORS.orange, color: '#fff', borderRadius: 14, padding: '14px 10px', fontSize: 14.5, fontWeight: 600, border: 'none' }}>
+          <LineIcon name="upload" tone="white" /> Take Photo
+        </button>
+        <button onClick={() => libraryInputRef.current?.click()}
+          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: COLORS.orange, color: '#fff', borderRadius: 14, padding: '14px 10px', fontSize: 14.5, fontWeight: 600, border: 'none' }}>
+          <LineIcon name="photo" tone="white" /> Choose Photos
+        </button>
+      </div>
+
+      {drafts.length === 0 && (
+        <div style={{ marginTop: 16 }}>
+          <EmptyState iconName="upload" color={COLORS.red} title="No photos yet" body="Take a photo of the HitTrax screen at the end of each bucket, then upload them here together." />
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 16 }}>
+        {drafts.map((d, i) => (
+          <Panel key={d.tempId} style={{ padding: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              {d.previewUrl ? (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <img src={d.previewUrl} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10, border: `1px solid ${COLORS.border}` }} />
+                  {d.sprayUrl && <img src={d.sprayUrl} alt="Spray chart crop" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10, border: `1px solid ${COLORS.blue}` }} />}
+                </div>
+              ) : (
+                <div style={{ width: 64, height: 64, borderRadius: 10, background: COLORS.panelAlt, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span className="spinner" style={{ color: COLORS.textMuted }} />
+                </div>
+              )}
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 16 }}>Bucket {i + 1}</span>
+                  <button onClick={() => removeDraft(d.tempId)} style={{ background: 'none', border: 'none', padding: 0 }}><LineIcon name="close" size={16} /></button>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Session date</span>
+                  <input type="date" value={d.sessionDate} onChange={(e) => updateDraft(d.tempId, { sessionDate: e.target.value })}
+                    style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, padding: '4px 8px', fontSize: 13 }} />
+                </label>
+                {d.status === 'checking' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: COLORS.textMuted, fontSize: 12, marginTop: 6 }}>
+                    <span className="spinner" /> Checking for duplicates…
+                  </div>
+                )}
+                {d.status === 'processing' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: COLORS.amber, fontSize: 12, marginTop: 6 }}>
+                    <span className="spinner" /> Reading stats off the screenshot…
+                  </div>
+                )}
+                {d.status === 'error' && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: COLORS.danger, fontSize: 12, marginTop: 6 }}><LineIcon name="alert" size={14} tone="red" /><span>{d.errorMsg}</span></div>
+                )}
+                {d.status === 'duplicate' && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: COLORS.amber, fontSize: 12.5, fontWeight: 600 }}>
+                      <LineIcon name="alert" size={14} tone="red" />
+                      <span>
+                        {d.duplicateOf?.sameBatch
+                          ? 'This looks identical to another photo you just picked.'
+                          : `This looks identical to a photo already saved (${fmtDateShort(d.duplicateOf?.sessionDate)}, Bucket ${d.duplicateOf?.bucketNum}).`}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <button onClick={() => removeDraft(d.tempId)}
+                        style={{ flex: 1, background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '8px 10px', color: COLORS.text, fontSize: 13, fontWeight: 600 }}>
+                        Skip this photo
+                      </button>
+                      <button onClick={() => resumeAnyway(d.tempId)}
+                        style={{ flex: 1, background: COLORS.orange, border: 'none', borderRadius: 10, padding: '8px 10px', color: '#fff', fontSize: 13, fontWeight: 600 }}>
+                        Upload anyway
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            {(d.status === 'done' || d.status === 'error') && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 12 }}>
+                  {REVIEW_FIELD_ORDER.map((key) => (
+                    <NumberField key={key} label={FIELD_LABELS[key]} value={d[key]}
+                      decimals={key === 'AVG' ? 3 : (key === 'pitchSpeed' || key === 'AvgVel' || key === 'MaxVel') ? 1 : 0}
+                      onChange={(v) => updateDraft(d.tempId, { [key]: v })} />
+                  ))}
+                </div>
+                <button onClick={() => updateDraft(d.tempId, { calibrating: !d.calibrating })}
+                  style={{ background: 'none', border: 'none', color: COLORS.blue, fontSize: 12, fontWeight: 600, padding: '10px 0 0' }}>
+                  {d.calibrating ? 'Hide crop adjustment' : 'Spray chart cropped wrong? Adjust this photo'}
+                </button>
+                {d.calibrating && (
+                  <div style={{ marginTop: 8 }}>
+                    <CropCalibrator
+                      previewUrl={d.previewUrl}
+                      cropConfig={d.crop}
+                      onApply={(box) => recropDraft(d.tempId, box)}
+                      onSaveDefault={(box) => { recropDraft(d.tempId, box); onSaveCropConfig(box); }}
+                      onClose={() => updateDraft(d.tempId, { calibrating: false })}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </Panel>
+        ))}
+      </div>
+
+      {drafts.length > 0 && (
+        <button onClick={saveAll} disabled={anyProcessing}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16,
+            background: anyProcessing ? COLORS.borderSoft : COLORS.red, color: anyProcessing ? COLORS.textFaint : '#fff',
+            borderRadius: 14, padding: '14px 16px', fontSize: 15, fontWeight: 700, border: 'none' }}>
+          <LineIcon name="save" tone="white" /> {anyProcessing ? 'Still reading photos…' : `Save ${drafts.length} bucket${drafts.length > 1 ? 's' : ''}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Log tab                                                                 */
+/* ---------------------------------------------------------------------- */
+
+function BucketRow({ bucket, onDelete, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(bucket);
+  useEffect(() => { setDraft(bucket); }, [bucket]);
+
+  if (editing) {
+    return (
+      <div style={{ padding: 12, borderTop: `1px solid ${COLORS.borderSoft}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ color: COLORS.text, fontSize: 14, fontWeight: 600 }}>Bucket {bucket.bucketNum}</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => { onUpdate(draft); setEditing(false); }} style={{ background: COLORS.red, border: 'none', borderRadius: 8, padding: '6px 10px' }}><LineIcon name="check" size={15} tone="white" /></button>
+            <button onClick={() => setEditing(false)} style={{ background: COLORS.panelAlt, border: 'none', borderRadius: 8, padding: '6px 10px' }}><LineIcon name="close" size={15} /></button>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+          {REVIEW_FIELD_ORDER.map((key) => (
+            <NumberField key={key} label={FIELD_LABELS[key]} value={draft[key]}
+              decimals={key === 'AVG' ? 3 : (key === 'pitchSpeed' || key === 'AvgVel' || key === 'MaxVel') ? 1 : 0}
+              onChange={(v) => setDraft((prev) => ({ ...prev, [key]: v }))} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: 12, borderTop: `1px solid ${COLORS.borderSoft}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ color: COLORS.text, fontSize: 14, fontWeight: 600 }}>Bucket {bucket.bucketNum}</span>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <button onClick={() => setEditing(true)} style={{ background: 'none', border: 'none', padding: 0 }}><LineIcon name="pencil" size={16} /></button>
+          <button onClick={onDelete} style={{ background: 'none', border: 'none', padding: 0 }}><LineIcon name="trash" size={16} /></button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', columnGap: 8, rowGap: 6, marginTop: 8 }}>
+        {REVIEW_FIELD_ORDER.map((key) => (
+          <div key={key}>
+            <div style={{ color: COLORS.textFaint, fontSize: 10 }}>{FIELD_LABELS[key]}</div>
+            <div style={{ color: COLORS.text, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+              {fmtVal(bucket[key], key === 'AVG' ? 3 : (key === 'pitchSpeed' || key === 'AvgVel' || key === 'MaxVel') ? 1 : 0)}
+              {bucket[key] != null && FIELD_UNITS[key] ? ' ' + FIELD_UNITS[key] : ''}
+            </div>
+          </div>
+        ))}
+      </div>
+      {bucket.sprayUrl && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ color: COLORS.textFaint, fontSize: 10, marginBottom: 4 }}>Spray chart</div>
+          <img src={bucket.sprayUrl} alt="Spray chart" style={{ width: '100%', maxHeight: 260, objectFit: 'contain', borderRadius: 10, border: `1px solid ${COLORS.border}`, background: COLORS.panelAlt }} />
+        </div>
+      )}
+    </div>
+  );
+}
+function SessionCard({ session, onDeleteBucket, onUpdateBucket, onDeleteSession }) {
+  const [open, setOpen] = useState(false);
+  const a = session.agg;
+  const handleDeleteSession = (e) => {
+    e.stopPropagation();
+    const count = session.buckets.length;
+    const ok = window.confirm(`Delete this entire session (${count} bucket${count > 1 ? 's' : ''}) from ${fmtDateLong(session.date)}? This can't be undone.`);
+    if (ok) onDeleteSession(session.date);
+  };
+  return (
+    <Panel style={{ overflow: 'hidden', borderLeft: `3px solid ${COLORS.blue}` }}>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <button onClick={() => setOpen((o) => !o)}
+          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 14, background: 'none', border: 'none', textAlign: 'left' }}>
+          <div>
+            <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 17 }}>{fmtDateLong(session.date)}</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 2 }}>
+              {session.buckets.length} bucket{session.buckets.length > 1 ? 's' : ''} · AVG {fmtVal(a.AVG, 3)} · Max EV {fmtVal(a.MaxVel, 1)} mph
+            </div>
+          </div>
+          <LineIcon name={open ? 'chevronUp' : 'chevronDown'} size={18} color={COLORS.blue} />
+        </button>
+        <button onClick={handleDeleteSession} style={{ background: 'none', border: 'none', padding: '14px 14px 14px 4px' }}>
+          <LineIcon name="trash" size={17} tone="red" />
+        </button>
+      </div>
+      {open && <div>{session.buckets.map((b) => (
+        <BucketRow key={b.id} bucket={b} onDelete={() => onDeleteBucket(b.id)} onUpdate={(patch) => onUpdateBucket(b.id, patch)} />
+      ))}</div>}
+    </Panel>
+  );
+}
+function LogTab({ buckets, onDeleteBucket, onUpdateBucket, onDeleteSession }) {
+  const sessions = groupBySession(buckets);
+  return (
+    <div>
+      <SectionTitle iconName="log" color={COLORS.blue} sub="Every session, grouped by date. Tap a session to see each bucket.">History</SectionTitle>
+      {sessions.length === 0 ? (
+        <EmptyState iconName="log" color={COLORS.blue} title="No sessions logged yet" body="Upload your first set of bucket photos to start building history." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {sessions.map((s) => <SessionCard key={s.date} session={s} onDeleteBucket={onDeleteBucket} onUpdateBucket={onUpdateBucket} onDeleteSession={onDeleteSession} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Progress tab                                                            */
+/* ---------------------------------------------------------------------- */
+
+function ResultsTable({ buckets }) {
+  const rows = [...buckets].sort((a, b) => {
+    if (a.sessionDate !== b.sessionDate) return a.sessionDate < b.sessionDate ? 1 : -1;
+    return a.bucketNum - b.bucketNum;
+  });
+  const cols = [
+    { key: 'sessionDate', label: 'Date', color: COLORS.text, fmt: (v) => fmtDateShort(v) },
+    { key: 'bucketNum', label: 'Bkt', color: COLORS.text, fmt: (v) => v },
+    { key: 'pitchSpeed', label: 'Pitch', color: COLORS.blue, fmt: (v) => fmtVal(v, 1) },
+    { key: 'AvgVel', label: 'AvgVel', color: COLORS.blue, fmt: (v) => fmtVal(v, 1) },
+    { key: 'MaxVel', label: 'MaxVel', color: COLORS.blue, fmt: (v) => fmtVal(v, 1) },
+    { key: 'P', label: 'P', color: COLORS.red, fmt: (v) => fmtVal(v, 0) },
+    { key: 'AB', label: 'AB', color: COLORS.red, fmt: (v) => fmtVal(v, 0) },
+    { key: 'H', label: 'H', color: COLORS.red, fmt: (v) => fmtVal(v, 0) },
+    { key: 'EBH', label: 'EBH', color: COLORS.red, fmt: (v) => fmtVal(v, 0) },
+    { key: 'HR', label: 'HR', color: COLORS.red, fmt: (v) => fmtVal(v, 0) },
+    { key: 'AVG', label: 'AVG', color: COLORS.red, fmt: (v) => fmtVal(v, 3) },
+    { key: 'LDpct', label: 'LD%', color: COLORS.red, fmt: (v) => fmtVal(v, 0) },
+    { key: 'MaxDist', label: 'MaxDist', color: COLORS.gold, fmt: (v) => fmtVal(v, 0) },
+    { key: 'MaxPoints', label: 'MaxPts', color: COLORS.gold, fmt: (v) => fmtVal(v, 0) },
+    { key: 'TotalPts', label: 'TotPts', color: COLORS.gold, fmt: (v) => fmtVal(v, 0) },
+  ];
+  return (
+    <Panel style={{ padding: 0, overflow: 'hidden', marginTop: 16 }}>
+      <div style={{ padding: '14px 16px 10px' }}>
+        <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 17 }}>All results</div>
+        <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 2 }}>Every bucket, most recent first — scroll sideways for more columns.</div>
+      </div>
+      <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11.5 }}>
+          <thead>
+            <tr>
+              {cols.map((c, i) => (
+                <th key={c.key} style={{
+                  position: i === 0 ? 'sticky' : 'static', left: i === 0 ? 0 : undefined,
+                  background: COLORS.panelAlt, color: c.color, textAlign: 'right', padding: '8px 10px',
+                  whiteSpace: 'nowrap', borderBottom: `1px solid ${COLORS.border}`, fontWeight: 600,
+                }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((b, ri) => (
+              <tr key={b.id} style={{ background: ri % 2 === 0 ? 'transparent' : COLORS.panelAlt }}>
+                {cols.map((c, i) => (
+                  <td key={c.key} style={{
+                    position: i === 0 ? 'sticky' : 'static', left: i === 0 ? 0 : undefined,
+                    background: i === 0 ? (ri % 2 === 0 ? COLORS.panel : COLORS.panelAlt) : undefined,
+                    color: COLORS.text, textAlign: 'right', padding: '7px 10px', whiteSpace: 'nowrap',
+                    fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${COLORS.borderSoft}`,
+                  }}>{c.fmt(b[c.key])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+const METRIC_Y_PAD = {
+  MaxVel: 4, AvgVel: 4, PitchSpeed: 4,
+  MaxDist: 15,
+  AVG: 0.04,
+  LDpct: 6,
+  MaxPoints: 6, TotalPts: 30,
+};
+
+function ProgressTab({ buckets }) {
+  const [metricKey, setMetricKey] = useState('MaxVel');
+  const metric = METRICS.find((m) => m.key === metricKey);
+  const getRaw = (b) => (metricKey === 'PitchSpeed' ? b.pitchSpeed : b[metricKey]);
+  const sortedBuckets = [...buckets].sort((a, b) => (
+    a.sessionDate === b.sessionDate ? a.bucketNum - b.bucketNum : (a.sessionDate < b.sessionDate ? -1 : 1)
+  ));
+  const chartData = sortedBuckets
+    .filter((b) => getRaw(b) !== null && getRaw(b) !== undefined)
+    .map((b) => ({ date: `${fmtDateShort(b.sessionDate)} #${b.bucketNum}`, value: Number(getRaw(b).toFixed(metric.decimals)) }));
+
+  const chartValues = chartData.map((d) => d.value);
+  const dataMin = chartValues.length ? Math.min(...chartValues) : 0;
+  const dataMax = chartValues.length ? Math.max(...chartValues) : 1;
+  const pad = Math.max((dataMax - dataMin) * 0.18, METRIC_Y_PAD[metricKey] ?? 1);
+  const yMin = Math.max(0, dataMin - pad);
+  const yMax = dataMax + pad;
+
+  return (
+    <div>
+      <SectionTitle iconName="progress" color={COLORS.green} sub="See how a stat has trended bucket by bucket.">All Statistics</SectionTitle>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        {METRICS.map((m) => (
+          <button key={m.key} onClick={() => setMetricKey(m.key)}
+            style={{ padding: '6px 12px', borderRadius: 999, fontSize: 12.5, border: `1px solid ${m.key === metricKey ? COLORS.green : COLORS.border}`,
+              background: m.key === metricKey ? 'rgba(62,207,87,0.15)' : 'transparent', color: m.key === metricKey ? COLORS.green : COLORS.textMuted }}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {chartData.length === 0 ? (
+        <EmptyState iconName="progress" color={COLORS.green} title="Nothing to chart yet" body="Log a couple of buckets and this will fill in with a trend line." />
+      ) : (
+        <>
+          <Panel style={{ padding: 16 }}>
+            <div style={{ color: COLORS.textMuted, fontSize: 12, marginBottom: 8 }}>{metric.label}{metric.unit ? ` (${metric.unit})` : ''} by bucket</div>
+            <SimpleLineChart data={chartData} decimals={metric.decimals} yMin={yMin} yMax={yMax} />
+          </Panel>
+          <ResultsTable buckets={buckets} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Records tab                                                            */
+/* ---------------------------------------------------------------------- */
+
+function GoalsRecordsTab({ buckets, goals, onAddGoal, onDeleteGoal, onUpdateGoal }) {
+  const recordMetrics = [
+    { key: 'MaxVel', label: 'Max Exit Velo', unit: 'mph', decimals: 1 },
+    { key: 'MaxDist', label: 'Max Distance', unit: 'ft', decimals: 0 },
+    { key: 'MaxPoints', label: 'Max Points (bucket)', unit: 'pts', decimals: 0 },
+    { key: 'AVG', label: 'Best Bucket AVG', unit: '', decimals: 3 },
+    { key: 'AvgVel', label: 'Best Avg Exit Velo', unit: 'mph', decimals: 1 },
+    { key: 'TotalPts', label: 'Best Total Points (bucket)', unit: 'pts', decimals: 0 },
+  ];
+  const records = recordMetrics.map((m) => {
+    const withVal = buckets.filter((b) => b[m.key] !== null && b[m.key] !== undefined);
+    if (withVal.length === 0) return { ...m, value: null, date: null };
+    const best = withVal.reduce((a,b) => (b[m.key] > a[m.key] ? b : a));
+    return { ...m, value: best[m.key], date: best.sessionDate, bucketNum: best.bucketNum };
+  });
+
+  const [metricKey, setMetricKey] = useState(METRICS[0].key);
+  const [target, setTarget] = useState('');
+  const bestFor = (key) => {
+    const withVal = buckets.filter((b) => b[key] !== null && b[key] !== undefined);
+    return withVal.length === 0 ? 0 : Math.max(...withVal.map((b) => b[key]));
+  };
+  const submit = () => {
+    if (!target || Number(target) <= 0) return;
+    onAddGoal({ id: uid(), metric: metricKey, target: Number(target), achieved: false, achievedDate: null });
+    setTarget('');
+  };
+
+  // Once a goal's best-ever value reaches its target, permanently flag it as
+  // achieved so it moves to the Achievements case and stays there.
+  useEffect(() => {
+    goals.forEach((g) => {
+      if (!g.achieved && bestFor(g.metric) >= g.target) {
+        onUpdateGoal(g.id, { achieved: true, achievedDate: todayStr() });
+      }
+    });
+    // eslint-disable-next-line
+  }, [buckets, goals]);
+
+  const achievements = goals.filter((g) => g.achieved);
+  const activeGoals = goals.filter((g) => !g.achieved);
+
+  return (
+    <div>
+      <SectionTitle iconName="records" color={COLORS.orange} sub="Personal bests across every bucket ever logged.">Personal Records</SectionTitle>
+      {buckets.length === 0 ? (
+        <EmptyState iconName="records" color={COLORS.orange} title="No records yet" body="Once you log a session, standout numbers will show up here." />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {records.map((r) => (
+            <Panel key={r.key} style={{ padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+                <Icon name="records" size={18} color={COLORS.orange} circle={false} />
+                <span style={{ color: COLORS.textMuted, fontSize: 11 }}>{r.label}</span>
+              </div>
+              <div style={{ color: COLORS.orange, fontFamily: HEADLINE_FONT, fontSize: 26 }}>
+                {r.value === null ? '—' : fmtVal(r.value, r.decimals)}
+                <span style={{ fontSize: 13, color: COLORS.textMuted, marginLeft: 4 }}>{r.unit}</span>
+              </div>
+              {r.date && <div style={{ color: COLORS.textFaint, fontSize: 11, marginTop: 4 }}>{fmtDateShort(r.date)} · Bucket {r.bucketNum}</div>}
+            </Panel>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 28 }}>
+        <SectionTitle iconName="records" color={COLORS.gold} sub="Goals your son has hit — once earned, these stay here for good.">Achievements</SectionTitle>
+        {achievements.length === 0 ? (
+          <EmptyState iconName="records" color={COLORS.gold} title="No achievements yet" body="Hit a goal below and it'll be enshrined here permanently." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {achievements.map((g) => {
+              const m = METRICS.find((mm) => mm.key === g.metric);
+              return (
+                <Panel key={g.id} style={{ padding: 14, borderLeft: `3px solid ${COLORS.gold}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Icon name="records" size={16} color={COLORS.gold} circle={false} />
+                      <span style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 16 }}>{m?.label}</span>
+                    </div>
+                    <button onClick={() => onDeleteGoal(g.id)} style={{ background: 'none', border: 'none', padding: 0 }}><LineIcon name="trash" size={15} /></button>
+                  </div>
+                  <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 600, marginTop: 4 }}>
+                    Hit {fmtVal(g.target, m?.decimals)} {m?.unit}
+                  </div>
+                  {g.achievedDate && <div style={{ color: COLORS.textFaint, fontSize: 11, marginTop: 2 }}>Achieved {fmtDateShort(g.achievedDate)}</div>}
+                </Panel>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <SectionTitle iconName="goals" color={COLORS.violet} sub="Set a target for a stat and watch the progress bar fill in as new bests come in.">Goals</SectionTitle>
+        <Panel style={{ padding: 14, marginBottom: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Stat</span>
+              <select value={metricKey} onChange={(e) => setMetricKey(e.target.value)}
+                style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '8px 10px', fontSize: 14 }}>
+                {METRICS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Target</span>
+              <input type="number" inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)}
+                placeholder={METRICS.find((m) => m.key === metricKey)?.unit || ''}
+                style={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '8px 10px', fontSize: 14 }} />
+            </label>
+            <button onClick={submit} style={{ marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              background: COLORS.violet, color: '#fff', borderRadius: 10, padding: 10, fontSize: 14, fontWeight: 600, border: 'none' }}>+ Add goal</button>
+          </div>
+        </Panel>
+        {activeGoals.length === 0 ? (
+          <EmptyState iconName="goals" color={COLORS.violet} title="No goals in progress" body="Add a target above — for example, a max exit velo to chase this season." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {activeGoals.map((g) => {
+              const m = METRICS.find((mm) => mm.key === g.metric);
+              const current = bestFor(g.metric);
+              const pct = Math.max(0, Math.min(100, (current / g.target) * 100));
+              const remaining = Math.max(0, g.target - current);
+              return (
+                <Panel key={g.id} style={{ padding: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 16 }}>{m?.label}</span>
+                    <button onClick={() => onDeleteGoal(g.id)} style={{ background: 'none', border: 'none', padding: 0 }}><LineIcon name="trash" size={16} /></button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, marginBottom: 8 }}>
+                    <span style={{ color: COLORS.textMuted, fontSize: 12 }}>Best so far: {fmtVal(current, m?.decimals)} {m?.unit}</span>
+                    <span style={{ color: COLORS.textMuted, fontSize: 12, fontWeight: 600 }}>Goal: {fmtVal(g.target, m?.decimals)} {m?.unit}</span>
+                  </div>
+                  <div style={{ height: 10, background: 'rgba(140,111,234,0.18)', borderRadius: 999, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: pct + '%', background: COLORS.violet, transition: 'width 0.4s ease' }} />
+                  </div>
+                  <div style={{ color: COLORS.violet, fontSize: 11.5, fontWeight: 600, marginTop: 6 }}>
+                    {fmtVal(remaining, m?.decimals)} {m?.unit} to go ({Math.round(pct)}%)
+                  </div>
+                </Panel>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Settings panel                                                         */
+/* ---------------------------------------------------------------------- */
+
+function SettingsPanel({ apiKey, onSave, onClose }) {
+  const [value, setValue] = useState(apiKey || '');
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'flex-end' }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: COLORS.panel, borderTop: `1px solid ${COLORS.border}`, borderRadius: '20px 20px 0 0', padding: 20, width: '100%' }}>
+        <div style={{ color: COLORS.text, fontFamily: HEADLINE_FONT, fontSize: 19, marginBottom: 4 }}>Anthropic API key</div>
+        <div style={{ color: COLORS.textMuted, fontSize: 12.5, lineHeight: 1.5, marginBottom: 12 }}>
+          Needed for photo-reading. Get one at console.anthropic.com. It's stored only in this browser, on this device, and used to call Claude directly from your phone.
+        </div>
+        <input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-..."
+          style={{ width: '100%', background: COLORS.panelAlt, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.text, padding: '10px 12px', fontSize: 14, marginBottom: 12 }} />
+        <button onClick={() => { onSave(value.trim()); onClose(); }}
+          style={{ width: '100%', background: COLORS.red, color: '#fff', border: 'none', borderRadius: 12, padding: 12, fontSize: 15, fontWeight: 700 }}>
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* App shell                                                               */
+/* ---------------------------------------------------------------------- */
+
+function App() {
+  const [tab, setTab] = useState('upload');
+  const [buckets, setBuckets] = useState(() => storage.get('hittrax_buckets', []));
+  const [goals, setGoals] = useState(() => storage.get('hittrax_goals', []));
+  const [apiKey, setApiKey] = useState(() => storage.get('hittrax_api_key', ''));
+  const [cropConfig, setCropConfig] = useState(() => storage.get('hittrax_crop_config', DEFAULT_CROP));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const persistBuckets = (next) => { setBuckets(next); storage.set('hittrax_buckets', next); };
+  const persistGoals = (next) => { setGoals(next); storage.set('hittrax_goals', next); };
+  const persistApiKey = (next) => { setApiKey(next); storage.set('hittrax_api_key', next); };
+  const persistCropConfig = (next) => { setCropConfig(next); storage.set('hittrax_crop_config', next); };
+
+  const handleSaveSession = (newBuckets) => persistBuckets([...buckets, ...newBuckets]);
+  const handleDeleteBucket = (id) => persistBuckets(buckets.filter((b) => b.id !== id));
+  const handleDeleteSession = (sessionDate) => persistBuckets(buckets.filter((b) => b.sessionDate !== sessionDate));
+  const handleUpdateBucket = (id, patch) => persistBuckets(buckets.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  const handleAddGoal = (goal) => persistGoals([...goals.filter((g) => g.metric !== goal.metric || g.achieved), goal]);
+  const handleDeleteGoal = (id) => persistGoals(goals.filter((g) => g.id !== id));
+  const handleUpdateGoal = (id, patch) => persistGoals(goals.map((g) => (g.id === id ? { ...g, ...patch } : g)));
+
+  return (
+    <div style={{ background: COLORS.bg, minHeight: '100vh', fontFamily: BODY_FONT, color: COLORS.text, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '20px 16px 12px', borderBottom: `1px solid ${COLORS.borderSoft}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <LineIcon name="pin" size={13} tone="red" />
+            <span style={{ color: COLORS.textMuted, fontSize: 11, letterSpacing: 0.5 }}>Batting Practice</span>
+          </div>
+          <h1 style={{ fontFamily: HEADLINE_FONT, fontSize: 28, marginTop: 2, color: COLORS.chalk }}>Session Tracker</h1>
+        </div>
+        <button onClick={() => setSettingsOpen(true)} style={{ background: 'none', border: 'none', marginTop: 4 }}>
+          <Icon name="gear" size={30} tone="muted" />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, padding: '18px 14px 90px', maxWidth: 640, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        {tab === 'upload' && <UploadTab buckets={buckets} apiKey={apiKey} onSaveSession={handleSaveSession} onNeedApiKey={() => setSettingsOpen(true)} cropConfig={cropConfig} onSaveCropConfig={persistCropConfig} />}
+        {tab === 'log' && <LogTab buckets={buckets} onDeleteBucket={handleDeleteBucket} onUpdateBucket={handleUpdateBucket} onDeleteSession={handleDeleteSession} />}
+        {tab === 'progress' && <ProgressTab buckets={buckets} />}
+        {tab === 'goalsRecords' && <GoalsRecordsTab buckets={buckets} goals={goals} onAddGoal={handleAddGoal} onDeleteGoal={handleDeleteGoal} onUpdateGoal={handleUpdateGoal} />}
+      </div>
+
+      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: COLORS.panel, borderTop: `1px solid ${COLORS.border}`, display: 'flex', paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
+        {TABS.map((t) => {
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, background: 'none', border: 'none', padding: '8px 4px 2px' }}>
+              <Icon name={t.icon} size={26} color={active ? t.color : COLORS.textFaint} />
+              <span style={{ fontSize: 10.5, color: active ? t.color : COLORS.textFaint }}>{t.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {settingsOpen && <SettingsPanel apiKey={apiKey} onSave={persistApiKey} onClose={() => setSettingsOpen(false)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<script>
+(function () {
+  var src = document.getElementById('app-source').textContent;
+  var output = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] }).code;
+  var s = document.createElement('script');
+  s.text = output;
+  document.body.appendChild(s);
+})();
+</script>
+</body>
+</html>
